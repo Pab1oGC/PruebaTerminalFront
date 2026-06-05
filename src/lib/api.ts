@@ -1,25 +1,42 @@
 import axios from 'axios';
 
-const api = axios.create({ baseURL: `${import.meta.env.VITE_API_URL}/api` });
+const BASE = import.meta.env.VITE_API_URL;
 
-api.interceptors.request.use(config => {
-  const token = localStorage.getItem('token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
+// Token en memoria — se pierde al recargar (se recupera vía /refresh en App.tsx)
+let _accessToken: string | null = null;
+export const setAccessToken = (t: string | null) => { _accessToken = t; };
+export const getAccessToken = () => _accessToken;
 
-api.interceptors.response.use(
-  res => res,
-  err => {
-    if (err.response?.status === 401) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      window.location.href = '/';
+export function createTenantApi(tenantCode: string) {
+  const api = axios.create({ baseURL: `${BASE}/api/t/${tenantCode}`, withCredentials: true });
+
+  api.interceptors.request.use(config => {
+    if (_accessToken) config.headers.Authorization = `Bearer ${_accessToken}`;
+    return config;
+  });
+
+  api.interceptors.response.use(
+    res => res,
+    async err => {
+      if (err.response?.status === 401 && err.config && !err.config._retry) {
+        err.config._retry = true;
+        try {
+          const { data } = await axios.post(
+            `${BASE}/api/t/${tenantCode}/auth/refresh`,
+            {},
+            { withCredentials: true }
+          );
+          setAccessToken(data.accessToken);
+          err.config.headers.Authorization = `Bearer ${data.accessToken}`;
+          return api.request(err.config);
+        } catch {
+          setAccessToken(null);
+          window.dispatchEvent(new CustomEvent('auth:logout'));
+        }
+      }
+      return Promise.reject(err);
     }
-    return Promise.reject(err);
-  }
-);
+  );
 
-export default api;
+  return api;
+}
